@@ -1,0 +1,32 @@
+.headerContainer {
+  padding-top: 30px;
+}
+
+.headerNav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 20px;
+  width: 100%;
+}
+
+.headerLogo {
+}
+
+.headerLogoImg {
+  width: 150px;
+  height: 43px;
+}
+
+.headerMenuList {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+}
+
+.headerMenuItem {
+}
+
+.headerMenuLink {
+}

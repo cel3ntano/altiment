@@ -1,0 +1,118 @@
+name: Deploy to cPanel
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18.20.4'
+          cache: 'npm'
+      - name: Install Dependencies
+        run: npm ci
+      - name: Build Next.js App
+        run: npm run build
+        env:
+          NODE_ENV: production
+      - name: Prepare Deploy Package
+        run: |
+          mkdir -p deploy-package
+          cp -r .next deploy-package/
+          cp package.json deploy-package/
+          cp package-lock.json deploy-package/
+          cp server.js deploy-package/
+          cp next.config.ts deploy-package/
+          cp tsconfig.json deploy-package/
+          cp -r public deploy-package/
+          cp next-env.d.ts deploy-package/
+
+      - name: Validate Deploy Package
+        run: |
+          if [ ! -d "deploy-package" ]; then
+            echo "❌ Deploy package not found!" && exit 1
+          fi
+          if [ ! -d "deploy-package/.next" ]; then
+            echo "❌ .next folder is missing in deploy package!" && exit 1
+          fi
+          echo "📦 Deploy package contents:"
+          ls -la deploy-package/
+
+      - name: Generate Known Hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -p 722 ${{ secrets.CPANEL_HOST }} | sort | uniq > ~/.ssh/known_hosts
+
+      - name: Configure SSH
+        run: |
+          echo "
+          Host cpanel
+            HostName ${{ secrets.CPANEL_HOST }}
+            Port 722
+            User ${{ secrets.CPANEL_USER }}
+            IdentityFile ~/.ssh/id_rsa
+            MACs hmac-sha2-512
+            StrictHostKeyChecking yes
+          " > ~/.ssh/config
+
+      - name: Install SSH Key
+        uses: shimataro/ssh-key-action@v2
+        with:
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          name: id_rsa
+          if_key_exists: replace
+          known_hosts: unnecessary
+
+      - name: Deploy to cPanel via SSH
+        run: |
+          # Create tar archive including hidden files
+          cd deploy-package && tar czf ../deploy.tar.gz . && cd ..
+
+          # Ensure destination directory exists
+          ssh cpanel "mkdir -p ${{ secrets.APP_PATH }}"
+
+          # Transfer and extract
+          scp deploy.tar.gz cpanel:${{ secrets.APP_PATH }}/ || exit 1
+
+          ssh cpanel "
+            cd ${{ secrets.APP_PATH }} && \
+            echo '📦 Extracting deployment package...' && \
+            tar xzf deploy.tar.gz && \
+            rm deploy.tar.gz && \
+            echo '📋 Deployed contents:' && \
+            ls -la && \
+            if [ ! -d '.next' ]; then
+              echo '❌ .next folder missing after extraction!' && exit 1
+            fi && \
+            echo '🚀 Starting deployment process...' && \
+            ${{ secrets.ACTIVATE_COMMAND }} && \
+            npm ci --omit=dev || exit 1 && \
+            if ! cloudlinux-selector stop --json --interpreter nodejs --user ${{ secrets.CPANEL_USER }} --app-root ${{ secrets.APP_PATH }}; then
+              echo '❌ Failed to stop the app'
+              exit 1
+            fi && \
+            sleep 5 && \
+            if ! cloudlinux-selector start --json --interpreter nodejs --user ${{ secrets.CPANEL_USER }} --app-root ${{ secrets.APP_PATH }}; then
+              echo '❌ Failed to start the app'
+              exit 1
+            fi && \
+            echo '✅ Deployment commands completed successfully'
+          "
+
+      - name: Verify Deployment
+        run: |
+          echo "⏳ Waiting for application to start..."
+          for i in {1..6}; do
+            if curl -m 30 -sSf ${{ secrets.DEPLOY_URL }} > /dev/null 2>&1; then
+              echo "✅ Deployment verified successfully!"
+              exit 0
+            fi
+            echo "Attempt $i failed, waiting 10 seconds before retry..."
+            sleep 10
+          done
+          echo "❌ Failed to verify deployment after 6 attempts (1 minute total)"
+          exit 1
